@@ -66,3 +66,13 @@ The progress docs follow craftrules' [`standards/progress-docs.md`](https://gith
 When a task lands, update in the same PR: the area row in `docs/target-app-parity.md` (score, missing items, hours) and its evidence list, the gap entry in `docs/gaps.md` if it closed or shrank, the checklist it belongs to, the milestone row in `docs/roadmap.md`, and the ROADMAP's tables and progress log when a headline number moves. Update each touched doc's status line and revision history.
 - Grade by behaviour against the public documentation (`plan/illustrator/` notes), not by whether a menu item exists. Scores are self-assessed, so err low; mark each number measured or estimated.
 - Keep the README's Status section in step with the ROADMAP headline.
+
+## Agent skills
+
+### Issue tracker
+
+Reports are markdown files in the Software Depot's `apps/<App>/reports/`, not GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
