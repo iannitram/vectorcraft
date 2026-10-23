@@ -28,8 +28,10 @@ use vectorcraft_tools::{PaintDefaults, Tool};
 
 pub use cmd::EyedropperOptions;
 pub use cmd::clipboard::Clipboard;
+pub use cmd::create::constrain_click;
 pub use cmd::distortcmds::perspective_click;
 pub use cmd::params::{check_keys, check_params};
+pub use cmd::pathops::auto_simplify_level;
 pub use cmd::rasterfx::{export_pdf, flatten_raster_effects};
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use journal::Journal;
@@ -641,6 +643,7 @@ impl DocState {
         if let Some(it) = self.interaction.take() {
             self.doc = it.doc;
             self.selection = Arc::unwrap_or_clone(it.selection);
+            self.sync_new_art();
             self.active_layer = it.active_layer;
             self.layer_rows = it.layer_rows;
             self.variables_highlight = it.variables_highlight;
@@ -651,6 +654,60 @@ impl DocState {
     /// Count the document as modified, as if never saved (a document restored by Data Recovery).
     pub fn mark_unsaved(&mut self) {
         self.saved_doc = Arc::new(Document::new(1.0, 1.0));
+    }
+    /// Deselect the art on a locked artboard, except new art ([`Document::new_art`]). New art
+    /// becomes the objects of layers on a locked artboard that hold selected objects (a group for
+    /// its selected members) and that an edit made (those not in `before`, the document before
+    /// it), or that held objects selected in `was` that were new art (`old`, the new art of that
+    /// selection), or were inside new art in `before` (the members of an ungrouped group). New art
+    /// that a selection leaves out, or that leaves the locked artboards, is protected from then
+    /// on. The selection and the document get the new art; the document's changes in place, so a
+    /// selection change doesn't replace the document.
+    fn protect_locked_artboards(&mut self, was: &[NodeId], old: &std::collections::HashSet<NodeId>, before: Option<&Document>) {
+        let new_art: std::collections::HashSet<NodeId> = {
+            let (doc, locks) = (&self.doc, self.doc.locked_artboards());
+            if locks.is_empty() {
+                Default::default()
+            } else {
+                // `was` and `old` name the objects of the document they were selected in.
+                let then = before.unwrap_or(doc);
+                let was: std::collections::HashSet<NodeId> =
+                    was.iter().filter_map(|o| then.layer_object(*o)).map(|n| n.id).filter(|o| old.contains(o)).collect();
+                let selected: Vec<(NodeId, &vectorcraft_doc::Node)> =
+                    self.selection.objects.iter().filter_map(|o| doc.layer_object(*o).map(|n| (*o, n))).collect();
+                // One walk of the document before the edit finds where the selected objects were;
+                // the objects the edit made aren't in it.
+                let paths = before.filter(|_| !selected.is_empty()).map(|b| b.index_paths(selected.iter().flat_map(|(o, n)| [*o, n.id])));
+                let new = |o: NodeId, object: NodeId| {
+                    was.contains(&object)
+                        || before.zip(paths.as_ref()).is_some_and(|(b, p)| {
+                            !p.contains_key(&object) || p.get(&o).and_then(|p| b.layer_object_at(p)).is_some_and(|n| was.contains(&n.id))
+                        })
+                };
+                selected.into_iter().filter(|(o, n)| new(*o, n.id) && locks.overlaps(n)).map(|(_, n)| n.id).collect()
+            }
+        };
+        if new_art != *self.selection.new_art {
+            self.selection.new_art = Arc::new(new_art);
+        }
+        self.sync_new_art();
+        self.selection.deselect_on_locked_artboards(&self.doc);
+    }
+    /// Give the document the selection's new art ([`Selection::new_art`]), less the objects the
+    /// selection no longer holds: after Undo, Redo or a failed batch brings back a document and
+    /// a selection, and after a command that changed the selection directly.
+    pub(crate) fn sync_new_art(&mut self) {
+        if !self.selection.new_art.is_empty() {
+            let held: std::collections::HashSet<NodeId> =
+                self.selection.objects.iter().filter_map(|o| self.doc.layer_object(*o)).map(|n| n.id).collect();
+            if !self.selection.new_art.is_subset(&held) {
+                self.selection.new_art = Arc::new(self.selection.new_art.intersection(&held).copied().collect());
+            }
+        }
+        let doc = self.doc.new_art.get();
+        if !Arc::ptr_eq(&doc, &self.selection.new_art) && *doc != *self.selection.new_art {
+            self.doc.new_art.set(self.selection.new_art.clone());
+        }
     }
     pub fn title(&self) -> String {
         let name = self
@@ -914,6 +971,8 @@ pub struct Prefs {
     pub measurement_labels: bool,
     pub spacing_guides: bool,
     pub snapping_tolerance: f64,
+    pub snap_tangent: bool,
+    pub snap_perpendicular: bool,
     // Slices
     pub show_slice_numbers: bool,
     pub slice_line_color: String,
@@ -923,7 +982,7 @@ pub struct Prefs {
     /// Type › Options › Additional Fonts Folder: a folder (read with its subfolders) whose fonts
     /// are listed and used as if installed (#683); empty for none.
     pub fonts_folder: String,
-    // Performance & Storage (Plug-ins & Scratch Disks)
+    // Plug-ins & Scratch Disks
     pub plugins_folder: String,
     pub scratch_primary: String,
     pub scratch_secondary: String,
@@ -1163,6 +1222,8 @@ impl Default for Prefs {
             measurement_labels: true,
             spacing_guides: true,
             snapping_tolerance: 4.0,
+            snap_tangent: true,
+            snap_perpendicular: true,
             show_slice_numbers: true,
             slice_line_color: s("#ff3f3f"),
             hyphenation_language: s("English: USA"),
@@ -1267,6 +1328,12 @@ pub struct Session {
     depth: u32,
     /// Set when the active tool panicked (see [`guard`]); reported by the next tool event.
     tool_panic: Option<EngineError>,
+    /// How many times switching or closing documents, or replacing the active one, has started the
+    /// tool afresh ([`Session::tool_resets`]).
+    tool_resets: u64,
+    /// Whether the tool's options were set after it last started afresh
+    /// ([`Session::tool_set_since_reset`]).
+    tool_set_since_reset: bool,
     /// Draw Normal / Behind / Inside (toolbar drawing modes).
     pub draw_mode: DrawMode,
     /// The path new art is drawn inside (Draw Inside).
@@ -1308,6 +1375,9 @@ pub struct Session {
     /// Where the plug-ins `plugin.install` installs are kept; `None`: only for the process
     /// ([`Session::attach_plugin_store`]).
     plugin_dir: Option<std::path::PathBuf>,
+    /// A filter's output that a run made in the background handed in for `plugin.run` to apply
+    /// ([`cmd::plugin::FilterRun::hand_in`]); the next `plugin.run` takes it.
+    plugin_output: Option<cmd::plugin::HandedIn>,
     /// URLs recently given in the Attributes panel (`attributes.set {url}`), newest first; not saved.
     pub recent_urls: Vec<String>,
     /// The language the UI is drawn in (a language code, never `auto`), set by the UI each frame;
@@ -1323,6 +1393,23 @@ pub struct Session {
     /// While `command.batch` runs: the documents its steps closed or replaced (Revert), which an
     /// error brings back; `None` otherwise.
     pub(crate) batch_stash: Option<Vec<DocState>>,
+    /// While [`Session::place_read`] runs `file.place`: the file read for it, which the command
+    /// places instead of reading the file; `None` otherwise.
+    pub(crate) place_hand_off: Option<cmd::place::PlaceRead>,
+    /// While [`Session::place_queue_read`] runs `file.place.queue`: the files read for it, which
+    /// the command loads the place cursor with instead of reading them; `None` otherwise.
+    pub(crate) queue_hand_off: Option<cmd::place::QueueRead>,
+    /// Whether a click or drag of the place cursor asks the frontend to place its file
+    /// ([`UiRequest::Place`]) instead of running `file.place`: the desktop app sets it to read the
+    /// file off the UI thread. False: the file is placed at once.
+    pub place_cursor_requests: bool,
+    /// While [`Session::prepare_package`] runs `file.package`: the package the command prepared,
+    /// which it leaves here instead of writing it; `None` otherwise.
+    pub(crate) package_hand_off: Option<Option<cmd::package::Package>>,
+    /// While [`Session::prepare_screen_export`] runs `document.exportForScreens` or
+    /// `assets.export`: the export the command prepared, which it leaves here instead of writing
+    /// it; `None` otherwise.
+    pub(crate) screens_hand_off: Option<Option<cmd::fileio::ScreenExport>>,
     /// Where Data Recovery keeps its copies ([`cmd::recovery`]).
     pub recovery: cmd::recovery::Recovery,
     /// While the active tool's actions run: their commands aren't "a command from outside the
@@ -1351,6 +1438,9 @@ pub struct Session {
     /// Where folder searches may go; `None`: this computer's rules ([`cmd::findfiles::Rules`]).
     /// Tests set it.
     pub search_rules: Option<cmd::findfiles::Rules>,
+    /// Canvas feedback cached for the pending deferred preview ([`Session::overlays`]); cleared
+    /// when the preview params change or the interaction ends.
+    pub(crate) deferred_overlay_cache: Option<(String, Value, Vec<vectorcraft_tools::Overlay>)>,
     /// The walker threads a folder search starts; `None`: [`cmd::findfiles::threads`]. Tests set
     /// it.
     pub search_threads: Option<usize>,
@@ -1368,12 +1458,17 @@ impl Default for Session {
 }
 
 impl Session {
+    /// A session with no document open, the default preferences and the Selection tool. It also
+    /// installs the hooks the document crate calls back into: the loader and file reader of placed
+    /// documents, and where an image's effects draw its fills and strokes, for clicks.
     pub fn new() -> Self {
         // Placed documents are read by the native format's loader.
         vectorcraft_doc::placed_document::set_loader(cmd::place::document::read_document);
         vectorcraft_doc::placed_document::set_file_reader(cmd::place::document::read_file_again);
         // Clicks find an image's own fills and strokes where their effects draw them.
         vectorcraft_doc::hit::set_image_paint(vectorcraft_render::effects::image_paint);
+        // OpenType SVG glyphs are drawn as the SVG importer reads their documents.
+        vectorcraft_text::set_svg_glyph_reader(vectorcraft_svg::glyph_art);
         Self {
             docs: vec![],
             active: None,
@@ -1389,6 +1484,8 @@ impl Session {
             preview_memo: Default::default(),
             depth: 0,
             tool_panic: None,
+            tool_resets: 0,
+            tool_set_since_reset: false,
             draw_mode: DrawMode::Normal,
             draw_inside: None,
             untitled_counter: 0,
@@ -1406,11 +1503,17 @@ impl Session {
             pdf_preset_dir: None,
             profile_dir: None,
             plugin_dir: None,
+            plugin_output: None,
             recent_urls: vec![],
             ui_language: None,
             journal_note: Default::default(),
             note_depth: 1,
             batch_stash: None,
+            place_hand_off: None,
+            queue_hand_off: None,
+            place_cursor_requests: false,
+            package_hand_off: None,
+            screens_hand_off: None,
             recovery: Default::default(),
             in_tool_actions: false,
             previewing: false,
@@ -1422,6 +1525,7 @@ impl Session {
             font_search: None,
             link_search: None,
             search_rules: None,
+            deferred_overlay_cache: None,
             search_threads: None,
             link_stamps: Default::default(),
             link_scan: None,
@@ -1468,6 +1572,8 @@ impl Session {
         }
         self.keep_tool_settings();
         self.tool = self.make_tool(self.tool.id());
+        self.tool_resets = self.tool_resets.wrapping_add(1);
+        self.tool_set_since_reset = false;
     }
     pub fn set_active(&mut self, index: usize) -> bool {
         if index < self.docs.len() {
@@ -1510,6 +1616,7 @@ impl Session {
         Self::refresh_text_bounds(&mut doc);
         // Guides from files saved before guides had layers go on a layer.
         doc.adopt_guides();
+        cmd::dimension::conform(&mut doc);
         self.reset_tool_for_doc_switch();
         let mut st = DocState::new(doc, path);
         st.history.limit = self.prefs.history_states as usize;
@@ -1527,6 +1634,7 @@ impl Session {
         doc.limit_depth();
         Self::refresh_text_bounds(&mut doc);
         doc.adopt_guides();
+        cmd::dimension::conform(&mut doc);
         if self.active == Some(index) {
             // Pending tool work (typing, a drag) belongs to the content being thrown away.
             self.reset_tool_for_doc_switch();
@@ -1699,7 +1807,7 @@ impl Session {
     fn run_guarded(&mut self, id: &str, f: impl FnOnce(&mut Self) -> Result<Value>) -> Result<Value> {
         let snapshot = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone(), d.interaction.clone()));
         let active = self.active;
-        match guard::catch_panic(|| self.run_nested(f)) {
+        let r = match guard::catch_panic(|| self.run_nested(f)) {
             Ok(r) => r,
             Err(msg) => {
                 self.depth = 0;
@@ -1717,7 +1825,13 @@ impl Session {
                 }
                 Err(EngineError::Internal { cmd: id.to_string(), msg })
             }
+        };
+        // Undo, Redo and a failed batch bring back documents with their selections: each document
+        // gets its selection's new art on a locked artboard.
+        for st in &mut self.docs {
+            st.sync_new_art();
         }
+        r
     }
 
     /// Run `f` on a mutable copy of the active document. Outside an interaction this records one
@@ -1783,6 +1897,9 @@ impl Session {
                 if guides_locked {
                     deselect_guides(&st.doc, &mut st.selection);
                 }
+                // The art on a locked artboard can't stay selected, however it got there, except
+                // the new art this edit made and new art still selected.
+                st.protect_locked_artboards(&before_sel.objects, &before_sel.new_art, Some(&*before));
                 st.revision += 1;
                 if st.interaction.is_none() {
                     let selection = match st.history.undo.last() {
@@ -1834,12 +1951,16 @@ impl Session {
         let guides_locked = self.menu.guides_locked;
         let st = self.doc_mut()?;
         let before = st.selection.objects.clone();
+        let new_art = st.selection.new_art.clone();
         f(&st.doc, &mut st.selection);
         st.selection.prune(&st.doc);
         // Lock Guides locks the paths made into guides too (#1534), whatever selects them.
         if guides_locked {
             deselect_guides(&st.doc, &mut st.selection);
         }
+        // The art on a locked artboard can't be selected, whatever selects it, except new art
+        // that was selected and still is.
+        st.protect_locked_artboards(&before, &new_art, None);
         // Selecting art makes its layer (or sublayer) the current one, as in the Layers panel of
         // the reference app: new art then goes beside it.
         if st.selection.objects != before
@@ -1859,12 +1980,23 @@ impl Session {
 
     // ---------- interactions (live drags) ----------
 
+    pub(crate) fn clear_deferred_overlay_cache(&mut self) {
+        self.deferred_overlay_cache = None;
+    }
+
+    /// The interaction's latest preview command when the document is still its snapshot (deferred
+    /// Real-time Drawing), regardless of the preference at commit or overlay time.
+    pub(crate) fn unapplied_interaction_preview(&self) -> Option<(String, Value)> {
+        self.active().and_then(|d| d.interaction.as_ref().filter(|it| std::sync::Arc::ptr_eq(&it.doc, &d.doc)).and_then(|it| it.preview.clone()))
+    }
+
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
         // Typing in progress is kept first: a drag or a dialog's preview would otherwise start
         // from the snapshot taken before the typing, and drop it (#1881).
         if label != "Typing" && cmd::typing_in_progress(self) {
             cmd::settle_interaction(self)?;
         }
+        self.clear_deferred_overlay_cache();
         let st = self.doc_mut()?;
         if st.interaction.is_some() {
             return Ok(());
@@ -1918,6 +2050,7 @@ impl Session {
     }
 
     pub fn commit_interaction(&mut self) -> Result<()> {
+        self.clear_deferred_overlay_cache();
         self.remember_pending_paint();
         let st = self.doc_mut()?;
         let Some(mut it) = st.interaction.take() else { return Ok(()) };
@@ -1970,6 +2103,7 @@ impl Session {
     }
 
     pub fn cancel_interaction(&mut self) -> Result<()> {
+        self.clear_deferred_overlay_cache();
         self.pending_paint = None;
         let guides_locked = self.menu.guides_locked;
         let st = self.doc_mut()?;
@@ -2052,6 +2186,7 @@ impl Session {
                 if self.menu.guides_locked {
                     deselect_guides(&st.doc, &mut st.selection);
                 }
+                st.sync_new_art();
                 st.revision += 1;
                 // The journal drops only the canceled groups' own entries and keeps the ones made in other documents meanwhile.
                 journal.extend(g.journal);
@@ -2216,6 +2351,14 @@ mod tests_colorguidelib;
 mod tests_colormgmt;
 #[cfg(test)]
 mod tests_colorthemes;
+#[cfg(test)]
+mod tests_colourfonts;
+#[cfg(test)]
+mod tests_compoundpaint;
+#[cfg(test)]
+mod tests_constrain_new;
+#[cfg(test)]
+mod tests_constrain_tools;
 #[cfg(test)]
 mod tests_containers;
 #[cfg(test)]
@@ -2466,6 +2609,8 @@ mod tests_tileedge;
 mod tests_tints;
 #[cfg(test)]
 mod tests_toolsettings;
+#[cfg(test)]
+mod tests_transformfx;
 #[cfg(test)]
 mod tests_transparencygrid;
 #[cfg(test)]
