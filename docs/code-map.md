@@ -1,6 +1,8 @@
 # VectorCraft code map (our fork)
 
-Ours, not upstream's. Built 2026-10-26 from the Cargo workspace (`crates/*`, `apps/*`, `xtask`) and each crate's `Cargo.toml` description; line counts are Rust lines on `main` that day. Upstream's own architecture notes: [`docs/architecture.md`](architecture.md) where present, and `AGENTS.md`. When a crate is added or split, update this table.
+Ours, not upstream's. Audited 2026-10-28 against `main`: each row below was checked against the Cargo workspace (`crates/*`, `apps/*`, `xtask`) and that crate's `Cargo.toml` (description and internal dependencies, dev-dependencies included). Sizes are Rust lines in tracked `.rs` files at that commit. The 24 crates, 3 apps and `xtask` below are the whole workspace. Upstream's own architecture notes: [`docs/architecture.md`](architecture.md) where present, and `AGENTS.md`. When a crate is added or split, update this table.
+
+Describes commit: 03e37ad2 (2026-10-28)
 
 ## Crates
 
@@ -12,7 +14,7 @@ Ours, not upstream's. Built 2026-10-26 from the Cargo workspace (`crates/*`, `ap
 | `crates/color` | VectorCraft color | — | 2 file(s) with per-OS or wasm code | ~8,488 |
 | `crates/doc` | VectorCraft document model: artboards, layers, objects, appearance (pure data + serde) | `color`, `geom` | 3 file(s) with per-OS or wasm code | ~27,887 |
 | `crates/effects` | VectorCraft live effects evaluated to geometry | `color`, `doc`, `geom`, `pathops`, `plugins`, `text`, `three-d` | portable | ~21,708 |
-| `crates/engine` | VectorCraft engine: sessions, history, selection, the command registry | `affinity`, `brush`, `cad`, `color`, `doc`, `eps`, `format`, `geom`, `metafile`, `pathops`, `pdf`, `plugins`, `render`, `scriptcheck`, `svg`, `testkit`, `text`, `tools`, `trace` | 29 file(s) with per-OS or wasm code | ~184,827 |
+| `crates/engine` | VectorCraft engine: sessions, history, selection, the command registry | `affinity`, `brush`, `cad`, `color`, `doc`, `eps`, `format`, `geom`, `metafile`, `pathops`, `pdf`, `plugins`, `render`, `scriptcheck`, `svg`, `testkit`, `text`, `tools`, `trace` | 31 file(s) with per-OS or wasm code | ~184,827 |
 | `crates/eps` | VectorCraft Encapsulated PostScript: a hand-written EPS writer (PostScript Level 2 and 3) with TIFF previews | `brush`, `color`, `doc`, `effects`, `geom`, `metafile`, `pdf`, `render`, `testkit`, `text` | portable | ~28,448 |
 | `crates/format` | VectorCraft native .vectorcraft format (versioned JSON, embedded images) | `doc`, `geom`, `testkit` | 2 file(s) with per-OS or wasm code | ~3,367 |
 | `crates/geom` | VectorCraft geom | `testkit` | 1 file(s) with per-OS or wasm code | ~3,863 |
@@ -29,8 +31,8 @@ Ours, not upstream's. Built 2026-10-26 from the Cargo workspace (`crates/*`, `ap
 | `crates/three-d` | Portable 3D effect geometry (revolve, extrude and bevel, inflate, rotate) and projected vector shading | `geom`, `pathops` | portable | ~4,664 |
 | `crates/tools` | VectorCraft tool state machines: pointer events in, commands and overlays out | `color`, `doc`, `effects`, `geom`, `pathops`, `text` | 2 file(s) with per-OS or wasm code | ~40,755 |
 | `crates/trace` | VectorCraft Image Trace: raster to vector tracing (quantize, boundary follow, polygon, Bezier fit) | `geom` | 1 file(s) with per-OS or wasm code | ~16,314 |
-| `crates/ui-egui` | VectorCraft egui frontend (menus, panels, tools and canvas); swappable — nothing below depends on it | `brush`, `cad`, `color`, `doc`, `effects`, `engine`, `eps`, `format`, `geom`, `pdf`, `plugins`, `render`, `svg`, `testkit`, `text`, `three-d`, `tools` | 35 file(s) with per-OS or wasm code | ~155,853 |
-| `apps/vectorcraft` | (no description in Cargo.toml) | `engine`, `text`, `ui-egui` | 13 file(s) with per-OS or wasm code | ~10,511 |
+| `crates/ui-egui` | VectorCraft egui frontend (menus, panels, tools and canvas); swappable — nothing below depends on it | `brush`, `cad`, `color`, `doc`, `effects`, `engine`, `eps`, `format`, `geom`, `pdf`, `plugins`, `render`, `svg`, `testkit`, `text`, `three-d`, `tools` | 36 file(s) with per-OS or wasm code | ~155,853 |
+| `apps/vectorcraft` | (no description in Cargo.toml) | `engine`, `text`, `ui-egui` | 15 file(s) with per-OS or wasm code | ~10,511 |
 | `apps/vectorcraft-cli` | VectorCraft command line: MCP server (stdio) and headless batch runs | `color`, `doc`, `engine`, `format`, `geom`, `mcp`, `render`, `svg`, `testkit`, `text` | 3 file(s) with per-OS or wasm code | ~2,378 |
 | `apps/vectorcraft-web` | VectorCraft in the browser (eframe web runner, WebGPU with WebGL2 fallback) | `engine`, `format`, `text`, `ui-egui` | 3 file(s) with per-OS or wasm code | ~1,824 |
 | `xtask` | Build and check tasks (`cargo xtask ci`, parity reports) | — | portable | — |
@@ -64,9 +66,19 @@ The engine owns the session, undo and the command registry; every user action is
 - `trace` is used by `engine`.
 - `ui-egui` is used by `vectorcraft`, `vectorcraft-web`.
 
+## Upstream and our delta
+
+Every crate, app and the `xtask` here is upstream's (`storytold/vectorcraft`). Our delta on top is documentation only: `PIPELINE.md`, `SPEC.md`, `CHANGELOG.md`, `AGENTS.fork.md`, this map, `docs/agents/`, and ten lines in `CLAUDE.md` (agent-skills config); `git diff --stat upstream/main...main` shows no source file. Upstream commits daily, so a day or two of its work is not on `main` until the daily sync merges it (on 2026-10-28 the crate set was identical on both).
+
+## Outside the workspace
+
+In this repo but outside the Cargo workspace: `vendor/windows-link` (a patched copy of the `windows-link` crate, used only by the experimental Windows 7 build; see `docs/windows7.md`), `examples/` (sample `.vectorcraft` files and an SVG), `assets/` (app icons, fonts and UI icons), `packaging/` (per-OS release packaging: `linux` incl. `linux/flatpak/`, `macos`, `windows`, `freebsd`, `web`), `contributors/`, `licenses/`.
+
+Not here at all: shared code that comes in as git dependencies pinned by revision, so a change to it is a change in another repository: the `craft-*` crates (`craft-pdf`, `craft-keymap`, `craft-update`, `craft-print`, `craft-ui`, `craft-window`, `craft-docpath`, the `hayro` PDF readers and `krilla`) from `storytold/craft-libs`, and forks of egui, eframe and winit (`storytold/egui`, `storytold/winit`).
+
 ## Mac, PC and Linux (R04)
 
-- Ships for macOS, Windows and Linux (plus FreeBSD and the web) from upstream's release workflow.
-- Per-OS code sits mostly in the engine, the `ui-egui` front end and the desktop app (the "Platforms" column counts files with `cfg(target_os…)`, `cfg(windows|unix)` or wasm code). Everything else is portable Rust.
-- Upstream CI (`ci.yml`) calls `storytold/craft-common-actions` `gate.yml` with its default `os` input, `["ubuntu-24.04"]`: pull requests are tested on Linux only. Release, FreeBSD, Nix, print, Windows ARM64 and Windows 7 have their own workflows.
+- Packaging for macOS, Windows, Linux, FreeBSD and the web is in `packaging/` (Flatpak manifests are in `packaging/linux/flatpak/`; there is no Homebrew cask yet). `release.yml` (push to `release`) calls the shared release workflow in `storytold/craft-common-actions`.
+- Per-OS code sits mostly in the engine, the `ui-egui` front end and the desktop app (the "Platforms" column counts files with `cfg(target_os…)`, `cfg(windows|unix)`, `cfg(target_family…)` or wasm code). Everything else is portable Rust.
+- CI: `ci.yml` (every pull request and push to main) calls `storytold/craft-common-actions` `gate.yml` with its default `os` input, `["ubuntu-24.04"]`: pull requests are tested on Linux only (#17 adds Windows and macOS). Path- or schedule-triggered workflows: `print.yml` (desktop printing on `windows-2022`, for pull requests that touch the print code), `windows7.yml` (experimental, unsupported Windows 7 x64 build on `windows-2022`, weekly and for changes to its path), `affinity-corpus.yml` (Affinity 3 corpus run on Linux, for changes under `crates/` and `xtask/`), `freebsd.yml`, `nix.yml`, `packaging-lint.yml`, `windows-arm64.yml`, `sonarcloud.yml` and `release.yml`.
 - A build issue that touches per-OS code carries a `platform:*` label and says which OS it was built and checked on.
