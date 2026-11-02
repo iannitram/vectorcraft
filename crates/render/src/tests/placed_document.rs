@@ -273,7 +273,10 @@ fn a_ready_bitmap_draws_again_where_its_file_shows() {
         patched[to..to + n].copy_from_slice(&part.pixels[from..from + n]);
     }
     assert!(patched == after.pixels, "drawn again in {area:?}, it differs from drawing it all");
-    assert!(before.pixels != after.pixels, "the bitmaps show");
+    // The bitmaps show. Where no worker thread can start, the frame that asks for a bitmap makes it
+    // there and then, so `before` may already show them: what is checked is the frame after.
+    assert_eq!(&after.pixel(15, 10)[..3], &[0, 0, 255], "A's bitmap shows");
+    assert_eq!(&after.pixel(85, 10)[..3], &[0, 0, 255], "B's bitmap shows");
     // Other files change nothing; art of a brush or a symbol showing the file changes everything.
     assert_eq!(placed_area(&d, &files(&["area-z"])), Changed::Nothing);
     let mut brushed = d.clone();
