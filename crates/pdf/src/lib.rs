@@ -78,7 +78,7 @@ pub use import::{
     INVISIBLE_TEXT_NOTE, OFF_ARTBOARD_NOTE, OUTLINED_TEXT_NOTE, PAST_PAGE_NOTE, UNMATCHED_GLYPHS_NOTE, UNNAMED_CHARACTERS_NOTE, holds_outlines,
     import, import_with_report, is_glyph_outlines, is_outlines_note,
 };
-pub use pages::{PageInfo, PdfInfo, has_illustrator_data, illustrator_data, info, is_postscript};
+pub use pages::{IllustratorData, PageInfo, PdfInfo, has_illustrator_data, illustrator_data, illustrator_data_without_pdf_part, info, is_postscript};
 pub use post::{THUMBNAIL_SIZE, Thumbnail};
 pub use presets::*;
 pub use print::*;
@@ -245,76 +245,6 @@ impl From<craft_pdf::write::WriteError> for PdfError {
 }
 
 #[cfg(test)]
+use tests::{import_fidelity as tests_import_fidelity, live_text as tests_live_text, stroke as tests_stroke};
+#[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_blend;
-#[cfg(test)]
-mod tests_charstroke;
-#[cfg(test)]
-mod tests_cmykblend;
-#[cfg(test)]
-mod tests_cmykimages;
-#[cfg(test)]
-mod tests_compression;
-#[cfg(test)]
-mod tests_dashalign;
-#[cfg(test)]
-mod tests_editing;
-#[cfg(test)]
-mod tests_encrypt;
-#[cfg(test)]
-mod tests_file_info;
-#[cfg(test)]
-mod tests_focal;
-#[cfg(test)]
-mod tests_fx;
-#[cfg(test)]
-mod tests_import_color;
-#[cfg(test)]
-mod tests_import_fidelity;
-#[cfg(test)]
-mod tests_import_layers;
-#[cfg(test)]
-mod tests_import_lines;
-#[cfg(test)]
-mod tests_import_options;
-#[cfg(test)]
-mod tests_import_overprint;
-#[cfg(test)]
-mod tests_layers;
-#[cfg(test)]
-mod tests_live_text;
-#[cfg(test)]
-mod tests_marks;
-#[cfg(test)]
-mod tests_output;
-#[cfg(test)]
-mod tests_pdf13;
-#[cfg(test)]
-mod tests_pdfx;
-#[cfg(test)]
-mod tests_presets;
-#[cfg(test)]
-mod tests_print;
-#[cfg(test)]
-mod tests_printadvanced;
-#[cfg(test)]
-mod tests_realtext;
-#[cfg(test)]
-mod tests_settings;
-#[cfg(test)]
-mod tests_stroke;
-#[cfg(test)]
-mod tests_strokeout;
-#[cfg(test)]
-mod tests_text_placement;
-#[cfg(test)]
-mod tests_textstroke;
-#[cfg(test)]
-mod tests_webview;
-
-#[cfg(test)]
-mod tests_reader_streaming;
-
-#[cfg(test)]
-mod tests_reader_compat;
