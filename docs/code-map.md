@@ -1,8 +1,8 @@
 # VectorCraft code map (our fork)
 
-Ours, not upstream's. Audited 2026-10-28 against `main`: each row below was checked against the Cargo workspace (`crates/*`, `apps/*`, `xtask`) and that crate's `Cargo.toml` (description and internal dependencies, dev-dependencies included). Sizes are Rust lines in tracked `.rs` files at that commit. The 24 crates, 3 apps and `xtask` below are the whole workspace. Upstream's own architecture notes: [`docs/architecture.md`](architecture.md) where present, and `AGENTS.md`. When a crate is added or split, update this table.
+Ours, not upstream's. Audited 2026-11-02 against `main`: each row below was checked against the Cargo workspace (`crates/*`, `apps/*`, `xtask`) and that crate's `Cargo.toml` (description and internal dependencies, dev-dependencies included). Sizes are Rust lines in tracked `.rs` files at that commit. The 24 crates, 3 apps and `xtask` below are the whole workspace. Upstream's own architecture notes: [`docs/architecture.md`](architecture.md) where present, and `AGENTS.md`. When a crate is added or split, update this table.
 
-Describes commit: 03e37ad2 (2026-10-28)
+Describes commit: a33a9e15 (2026-11-02)
 
 ## Crates
 
@@ -68,17 +68,17 @@ The engine owns the session, undo and the command registry; every user action is
 
 ## Upstream and our delta
 
-Every crate, app and the `xtask` here is upstream's (`storytold/vectorcraft`). Our delta on top is documentation only: `PIPELINE.md`, `SPEC.md`, `CHANGELOG.md`, `AGENTS.fork.md`, this map, `docs/agents/`, and ten lines in `CLAUDE.md` (agent-skills config); `git diff --stat upstream/main...main` shows no source file. Upstream commits daily, so a day or two of its work is not on `main` until the daily sync merges it (on 2026-10-28 the crate set was identical on both).
+Every crate, app and the `xtask` here is upstream's (`storytold/vectorcraft`). Our delta on top is documentation only: `PIPELINE.md`, `SPEC.md`, `CHANGELOG.md`, `AGENTS.fork.md`, this map, `docs/agents/`, and ten lines in `CLAUDE.md` (agent-skills config); `git diff --stat upstream/main...main` shows no source file. Upstream commits daily, so a day or two of its work is not on `main` until the daily sync merges it (on 2026-11-02 the crate set was identical on both).
 
 ## Outside the workspace
 
-In this repo but outside the Cargo workspace: `vendor/windows-link` (a patched copy of the `windows-link` crate, used only by the experimental Windows 7 build; see `docs/windows7.md`), `examples/` (sample `.vectorcraft` files and an SVG), `assets/` (app icons, fonts and UI icons), `packaging/` (per-OS release packaging: `linux` incl. `linux/flatpak/`, `macos`, `windows`, `freebsd`, `web`), `contributors/`, `licenses/`.
+In this repo but outside the Cargo workspace: `examples/` (sample `.vectorcraft` files and an SVG), `assets/` (app icons, fonts and UI icons), `packaging/` (per-OS release packaging: `linux` incl. `linux/flatpak/`, `macos`, `windows`, `freebsd`, `web`), `contributors/`, `licenses/`.
 
 Not here at all: shared code that comes in as git dependencies pinned by revision, so a change to it is a change in another repository: the `craft-*` crates (`craft-pdf`, `craft-keymap`, `craft-update`, `craft-print`, `craft-ui`, `craft-window`, `craft-docpath`, the `hayro` PDF readers and `krilla`) from `storytold/craft-libs`, and forks of egui, eframe and winit (`storytold/egui`, `storytold/winit`).
 
 ## Mac, PC and Linux (R04)
 
-- Packaging for macOS, Windows, Linux, FreeBSD and the web is in `packaging/` (Flatpak manifests are in `packaging/linux/flatpak/`; there is no Homebrew cask yet). `release.yml` (push to `release`) calls the shared release workflow in `storytold/craft-common-actions`.
+- Packaging for macOS, Windows, Linux, FreeBSD and the web is in `packaging/` (Flatpak manifests are in `packaging/linux/flatpak/`; there is no Homebrew cask yet). Upstream removed its experimental Windows 7 build, so the `vendor/` copy of `windows-link` and the `windows7.yml` workflow are gone. `release.yml` (push to `release`) calls the shared release workflow in `storytold/craft-common-actions`.
 - Per-OS code sits mostly in the engine, the `ui-egui` front end and the desktop app (the "Platforms" column counts files with `cfg(target_os…)`, `cfg(windows|unix)`, `cfg(target_family…)` or wasm code). Everything else is portable Rust.
-- CI: `ci.yml` (every pull request and push to main) calls `storytold/craft-common-actions` `gate.yml` with its default `os` input, `["ubuntu-24.04"]`: pull requests are tested on Linux only (#17 adds Windows and macOS). Path- or schedule-triggered workflows: `print.yml` (desktop printing on `windows-2022`, for pull requests that touch the print code), `windows7.yml` (experimental, unsupported Windows 7 x64 build on `windows-2022`, weekly and for changes to its path), `affinity-corpus.yml` (Affinity 3 corpus run on Linux, for changes under `crates/` and `xtask/`), `freebsd.yml`, `nix.yml`, `packaging-lint.yml`, `windows-arm64.yml`, `sonarcloud.yml` and `release.yml`.
+- CI: `ci.yml` (every pull request and push to main) calls `storytold/craft-common-actions` `gate.yml` with its default `os` input, `["ubuntu-24.04"]`: pull requests are tested on Linux only (#17 adds Windows and macOS). Path- or schedule-triggered workflows: `print.yml` (desktop printing on `windows-2022`, for pull requests that touch the print code), `affinity-corpus.yml` (Affinity 3 corpus run on Linux, for changes under `crates/` and `xtask/`), `freebsd.yml`, `nix.yml`, `packaging-lint.yml`, `windows-arm64.yml`, `sonarcloud.yml` and `release.yml`.
 - A build issue that touches per-OS code carries a `platform:*` label and says which OS it was built and checked on.
