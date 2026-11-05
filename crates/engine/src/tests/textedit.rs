@@ -2825,6 +2825,10 @@ fn the_fallback_glyph_of_a_consonant_after_its_vowel_sign_is_reported() {
     assert_ne!(fallback.id(), requested.id());
     let (ka, sign) = (fallback.glyph_for('क'), fallback.glyph_for('\u{93F}'));
     let drawn: Vec<_> = glyphs.iter().map(|g| (g.gid, g.byte)).collect();
+    // A real Devanagari face (Noto Sans Devanagari) draws the vowel sign as a substituted glyph, not
+    // the one its cmap gives; only Matratest Sans draws exactly the cmap's.
+    let sign = if fallback.family == MATRA_FAMILY { sign } else { drawn.first().map_or(0, |d| d.0) };
+    assert_ne!(sign, ka, "the first glyph drawn is not Ka's");
     assert_eq!(drawn, [(sign, 0), (ka, 0)], "the vowel sign is drawn first, in Ka's cluster ({} or {MATRA_FAMILY})", fallback.family);
     let query = s.execute("text.glyphAlternates", &json!({"id": open.0, "start": 0})).unwrap();
     assert_eq!(query["chosen"], json!(ka), "the fallback face's glyph for Ka");
