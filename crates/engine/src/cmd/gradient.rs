@@ -41,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select Gradient Stop",
             [],
             None,
-            "{index: stop index (0 = the start) | null to clear} select a stop of the gradient behind the active proxy (the first selected object's, else the default paint): the stop the Gradient tool's annotator, the Gradient and Color panels and Delete/arrow keys act on → {index}",
+            "{index: stop index (0 = the start) | null to clear} select a stop of the gradient behind the active proxy (the first selected object's, else the default paint): the stop the Gradient tool's annotator, the Gradient and Color panels and Delete/arrow keys act on; refused while an object of a symbol instance's art is selected → {index}",
             always,
             select_stop
         ),
@@ -59,6 +59,10 @@ pub(crate) fn active_gradient(s: &Session) -> Option<GradientPaint> {
 
 fn select_stop(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "gradient.selectStop";
+    // No document is needed for the default paint's gradient, so this does not use `refuse_symbol_part`.
+    if s.active().is_some_and(|st| st.selection.symbol_part.is_some()) {
+        return Err(super::brushsym::part_only());
+    }
     let index = match p.get("index") {
         None => return Err(bad(C, "missing `index` (a stop index, or null to clear)")),
         Some(Value::Null) => None,
@@ -76,19 +80,28 @@ fn select_stop(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Whose gradient a selected stop belongs to: the active document, its first selected object
-/// (None: the default paint), the proxy in front and the Appearance panel's active item.
-/// Selecting other art, toggling the proxy or picking another item leaves no stop selected.
+/// (None: the default paint), whether a part of a symbol instance's art is picked, the proxy in
+/// front and the Appearance panel's active item. Selecting other art, picking a part of the
+/// instance, toggling the proxy or picking another item leaves no stop selected.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StopOwner {
     doc: Option<usize>,
     object: Option<NodeId>,
+    part: bool,
     fill: bool,
     item: Option<usize>,
 }
 
 impl StopOwner {
     pub(crate) fn of(s: &Session) -> Self {
-        Self { doc: s.active, object: s.active().and_then(|d| d.selection.objects.first().copied()), fill: s.fill_active, item: s.appearance_item() }
+        let st = s.active();
+        Self {
+            doc: s.active,
+            object: st.and_then(|d| d.selection.objects.first().copied()),
+            part: st.is_some_and(|d| d.selection.symbol_part.is_some()),
+            fill: s.fill_active,
+            item: s.appearance_item(),
+        }
     }
 }
 

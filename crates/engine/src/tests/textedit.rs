@@ -280,6 +280,37 @@ fn metrics_pair_step_preserves_the_drawn_auto_position() {
     assert!((moved - s.prefs.tracking_increment * 0.1).abs() < 0.01, "V moves by one kerning increment: {moved}");
 }
 
+/// At 50% Horizontal Scale the font's pair reads as the same thousandths of an em as at 100%:
+/// kerning is measured in the em as the scale draws it (`vectorcraft_text::spacing_scale`), so the
+/// value read keeps V where the font's kerning draws it, and a step moves V half as far as at 100%.
+#[test]
+fn horizontally_scaled_pair_reads_as_the_kerning_that_keeps_it() {
+    use vectorcraft_text::test_fonts::{PAIR_KERNING_FAMILY, pair_kerning_font};
+
+    let db = vectorcraft_text::FontDb::global();
+    db.add_font(pair_kerning_font().unwrap());
+    let mut s = session();
+    let id = NodeId(
+        s.execute("text.create", &json!({"x": 10, "y": 10, "text": "AV", "size": 100, "font": PAIR_KERNING_FAMILY})).unwrap()["id"].as_u64().unwrap(),
+    );
+    s.execute("text.setRangeStyle", &json!({"id": id.0, "start": 0, "end": 2, "hScale": 50})).unwrap();
+    let before = obj(&s, id);
+    assert_eq!(before.runs[0].style.h_scale, 50.0);
+    let auto = vectorcraft_text::layout(db, &before);
+    let drawn_v = |layout: &vectorcraft_text::TextLayout| layout.glyphs.iter().find(|g| g.byte == 1).unwrap().xf.as_coeffs()[4];
+    let read = crate::cmd::effective_kerning(db, &before, &auto, 0, 1);
+    assert!((read + 160.0).abs() < 0.01, "the font's -160/1000 em: {read}");
+    let mut same = before.clone();
+    vectorcraft_text::edit::style_range(&mut same.runs, 0, 1, |st| st.kerning = Some(read));
+    assert!((drawn_v(&vectorcraft_text::layout(db, &same)) - drawn_v(&auto)).abs() < 0.01);
+
+    s.execute("type.step", &json!({"id": id.0, "start": 1, "end": 1, "attribute": "kerning", "by": 1})).unwrap();
+    let after = obj(&s, id);
+    assert!((after.runs[0].style.kerning.unwrap() + 160.0 - s.prefs.tracking_increment).abs() < 0.01);
+    let moved = drawn_v(&vectorcraft_text::layout(db, &after)) - drawn_v(&auto);
+    assert!((moved - s.prefs.tracking_increment * 0.05).abs() < 0.01, "V moves by half a kerning increment at 100%: {moved}");
+}
+
 #[test]
 fn effective_auto_kerning_at_area_line_end_survives_unkerned_wrap() {
     use vectorcraft_text::test_fonts::{PAIR_KERNING_FAMILY, pair_kerning_font};
@@ -465,6 +496,85 @@ fn type_commands_refuse_a_number_or_boolean_given_as_text() {
     let st = &t.runs[0].style;
     assert!(st.underline && st.strikethrough && st.no_break && t.optical_margin && st.size > 30.0, "{st:?}");
     assert!(!t.ruby.is_empty() && t.ruby.iter().all(|r| !r.overhang && r.size_percent == 50.0), "{:?}", t.ruby);
+}
+
+/// The Character commands, Ruby and Move Type Path Handle refuse a param of the wrong type with an
+/// error naming the param, also when another param would change something, and leave the
+/// document, its revision, the selection and the undo history as they were. Null counts as a param
+/// left out, which keeps its default, and `size` and `leading` take a length with a unit.
+#[test]
+fn character_ruby_and_path_handle_refuse_a_param_of_the_wrong_type() {
+    use crate::tests::{history, not_a_number, select_with_a_step_to_redo};
+    let mut s = session();
+    let id = text(&mut s, "abc");
+    let path = s.execute("path.create", &json!({"anchors": [{"x": 100, "y": 300, "in": [50, 300], "out": [150, 300]}, {"x": 400, "y": 300}]}));
+    let on_path = s.execute("text.createInPath", &json!({"path": path.unwrap()["id"], "mode": "onPath", "text": "Along"})).unwrap()["id"].clone();
+    select_with_a_step_to_redo(&mut s, &[id]);
+    let string = |k: &str| format!("`{k}` must be a string");
+    let tags = "features must be a list of tags".to_string();
+    let which = "`which` must be one of in, out".to_string();
+    let handle = |which: Value| json!({"id": on_path, "anchor": 0, "which": which, "x": 100, "y": 250});
+    let mut calls = vec![
+        ("text.setStyle", json!({"font": 5}), string("font")),
+        ("text.setStyle", json!({"style": true}), string("style")),
+        ("text.setStyle", json!({"size": 30, "style": ["Bold"]}), string("style")),
+        ("text.setStyle", json!({"justify": 1}), string("justify")),
+        ("text.setStyle", json!({"size": 30, "justify": {"value": "center"}}), string("justify")),
+        ("text.setStyle", json!({"features": ["dlig", 5]}), tags.clone()),
+        ("text.setStyle", json!({"leading": true}), "leading must be a number or \"auto\"".to_string()),
+        ("text.setStyle", json!({"leading": "12abc"}), "leading must be a number or \"auto\"".to_string()),
+        ("text.setRangeStyle", json!({"id": id.0, "font": 5}), string("font")),
+        ("text.setRangeStyle", json!({"id": id.0, "size": 30, "style": false}), string("style")),
+        ("text.setRangeStyle", json!({"id": id.0, "features": [null]}), tags),
+        ("type.ruby", json!({"text": 5}), string("text")),
+        ("type.ruby", json!({"remove": true, "text": ["a"]}), string("text")),
+        ("type.ruby", json!({"text": "a", "position": 1}), string("position")),
+        ("type.ruby", json!({"text": "a", "align": true}), string("align")),
+        ("text.setPathHandle", handle(json!(1)), which.clone()),
+        ("text.setPathHandle", handle(json!("up")), which),
+    ];
+    calls.extend(
+        [
+            ("text.setStyle", json!({"size": true}), "size"),
+            ("text.setStyle", json!({"size": "big"}), "size"),
+            ("text.setStyle", json!({"size": "20abc"}), "size"),
+            ("text.setStyle", json!({"tracking": "20abc"}), "tracking"),
+            ("text.setStyle", json!({"font": "Inter", "size": [12]}), "size"),
+            ("text.setStyle", json!({"tracking": "wide"}), "tracking"),
+            ("text.setStyle", json!({"size": 30, "tracking": false}), "tracking"),
+        ]
+        .map(|(cmd, p, key)| {
+            let (_, p, msg) = not_a_number(cmd, p, key);
+            (cmd, p, msg)
+        }),
+    );
+    let state = |s: &Session| {
+        let st = s.doc().unwrap();
+        (st.doc.clone(), st.revision, st.selection.objects.clone(), history(s))
+    };
+    let before = state(&s);
+    let wrong: Vec<String> = calls
+        .iter()
+        .filter_map(|(cmd, p, want)| {
+            let r = s.execute(cmd, p);
+            let refused = matches!(&r, Err(EngineError::BadParams { msg, .. }) if msg == want);
+            let unchanged = state(&s) == before;
+            (!refused || !unchanged).then(|| format!("{cmd} {p}: {r:?}, unchanged: {unchanged}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "not refused: {wrong:#?}");
+    // Null keeps each default; a size and a leading with a unit are lengths.
+    let r = json!({"font": null, "style": null, "justify": null, "tracking": null, "features": null, "leading": null, "size": "5 mm"});
+    s.execute("text.setStyle", &r).unwrap();
+    let st = obj(&s, id).runs[0].style.clone();
+    assert!((st.size - 5.0 * 72.0 / 25.4).abs() < 1e-6 && st.tracking == 0.0 && st.leading.is_none(), "{st:?}");
+    s.execute("text.setStyle", &json!({"size": "12 pt", "leading": "18 pt", "tracking": 50})).unwrap();
+    let st = obj(&s, id).runs[0].style.clone();
+    assert_eq!((st.size, st.leading, st.tracking), (12.0, Some(18.0), 50.0));
+    s.execute("type.ruby", &json!({"text": "a", "position": null, "align": null})).unwrap();
+    let ruby = obj(&s, id).ruby;
+    assert!(ruby.iter().all(|r| r.position == vectorcraft_doc::RubyPosition::Above && r.align == vectorcraft_doc::RubyAlign::Center), "{ruby:?}");
+    s.execute("text.setPathHandle", &handle(Value::Null)).unwrap();
 }
 
 /// Where each glyph of type object `id` is drawn from (its origin in font units), document space.
@@ -1047,18 +1157,20 @@ fn list_markers(s: &Session, id: NodeId) -> Vec<String> {
 }
 
 /// Typed list detection: at the start of a paragraph, "1.", "1)", "A." or "A)" and a space start
-/// a numbered list, and "*", "#", ">" or "+" and a space start a bulleted list with the filled dot.
-/// The typed characters go, the paragraph takes the hanging indent, and the text typed next is the
-/// list item's. One Undo puts the typed characters back with no list, and typing goes on after
-/// them, also after a Backspace that deleted nothing.
+/// a numbered list, and "*", "+", "#" or ">" and a space start a bulleted list with the filled dot,
+/// the hollow circle, the filled square or the dash. The typed characters go, the paragraph takes
+/// the hanging indent, and the text typed next is the list item's. One Undo puts the typed
+/// characters back with no list, and typing goes on after them, also after a Backspace that
+/// deleted nothing.
 #[test]
 fn typing_a_list_start_and_a_space_starts_a_list() {
     use vectorcraft_doc::text::{Bullet, NumberStyle, ParaList};
     let v = ViewInfo::default();
-    let (arabic, letters, dot) =
-        (ParaList::numbered(NumberStyle::Arabic), ParaList::numbered(NumberStyle::UpperLetters), ParaList::bulleted(Bullet::Dot));
+    let (arabic, letters) = (ParaList::numbered(NumberStyle::Arabic), ParaList::numbered(NumberStyle::UpperLetters));
     let cases = [("1.", arabic, "1."), ("1)", arabic, "1."), ("A.", letters, "A."), ("A)", letters, "A.")];
-    let bullets = ["*", "#", ">", "+"].map(|b| (b, dot, "\u{2022}"));
+    let bullets =
+        [("*", Bullet::Dot, "\u{2022}"), ("+", Bullet::Circle, "\u{25E6}"), ("#", Bullet::Square, "\u{25AA}"), (">", Bullet::Dash, "\u{2013}")]
+            .map(|(b, bullet, marker)| (b, ParaList::bulleted(bullet), marker));
     for (typed, list, marker) in cases.into_iter().chain(bullets) {
         let mut s = session();
         s.select_tool("type", v).unwrap();
@@ -1132,11 +1244,65 @@ fn the_caret_follows_undo_and_redo_of_a_typed_list() {
     }
 }
 
+/// Type › Start Lists From Typed Markers off: a list marker and a space typed at the start of a
+/// paragraph stay as text and start no list; `text.startList` still starts one.
+#[test]
+fn typed_lists_off_leaves_typed_markers_as_text() {
+    let v = ViewInfo::default();
+    for typed in ["1.", "1)", "A.", "A)", "*", "#", ">", "+"] {
+        let mut s = session();
+        s.execute("prefs.set", &json!({"key": "typedLists", "value": false})).unwrap();
+        s.select_tool("type", v).unwrap();
+        click(&mut s, 200.0, 200.0);
+        let id = s.doc().unwrap().selection.objects[0];
+        for c in typed.chars().chain(" a".chars()) {
+            s.tool_text(&c.to_string(), v).unwrap();
+        }
+        let t = obj(&s, id);
+        assert_eq!((t.plain_text(), t.para_at(0).list), (format!("{typed} a"), None), "{typed}");
+        assert!(!undo_labels(&s).iter().any(|l| l == "Bullets and Numbering"), "{typed}");
+        // Turned back on, the same typing in a new paragraph starts a list.
+        s.execute("prefs.set", &json!({"key": "typedLists", "value": true})).unwrap();
+        key(&mut s, ToolKey::Enter, Mods::default());
+        for c in typed.chars().chain(" ".chars()) {
+            s.tool_text(&c.to_string(), v).unwrap();
+        }
+        let t = obj(&s, id);
+        assert_eq!((t.plain_text(), t.para_at(0).list, t.para_at(1).list.is_some()), (format!("{typed} a\n"), None, true), "on: {typed}");
+        assert_eq!(undo_labels(&s).last().map(String::as_str), Some("Bullets and Numbering"), "on: {typed}");
+    }
+    let mut s = session();
+    s.execute("prefs.set", &json!({"key": "typedLists", "value": false})).unwrap();
+    let id = text(&mut s, "1. a");
+    let r = s.execute("text.startList", &json!({"id": id.0, "at": 3})).unwrap();
+    assert_eq!(r["started"], true);
+    assert_eq!(obj(&s, id).plain_text(), "a");
+    assert!(obj(&s, id).para_at(0).list.is_some());
+}
+
+/// `typedLists` is a Type preference, on by default: `prefs.list` lists it as a bool, and
+/// `prefs.reset` of the Type category turns it back on.
+#[test]
+fn typed_lists_is_a_type_preference_on_by_default() {
+    let mut s = Session::new();
+    assert!(s.prefs.typed_lists);
+    let l = s.execute("prefs.list", &json!({})).unwrap();
+    let row = l.as_array().unwrap().iter().find(|e| e["key"] == "typedLists").unwrap().clone();
+    assert_eq!(
+        (&row["category"], &row["kind"], &row["label"], &row["value"]),
+        (&json!("Type"), &json!("bool"), &json!("Start Lists From Typed Markers"), &json!(true))
+    );
+    s.execute("prefs.set", &json!({"key": "typedLists", "value": false})).unwrap();
+    assert!(!s.prefs.typed_lists);
+    s.execute("prefs.reset", &json!({"category": "Type"})).unwrap();
+    assert!(s.prefs.typed_lists);
+}
+
 /// The same characters later in a paragraph, without the space, typed in one piece with the space
 /// (a paste), or at the start of a paragraph that is already in a list start nothing.
 #[test]
 fn list_starts_typed_elsewhere_or_pasted_start_no_list() {
-    use vectorcraft_doc::text::{NumberStyle, ParaList};
+    use vectorcraft_doc::text::{Bullet, NumberStyle, ParaList};
     let v = ViewInfo::default();
     let mut s = session();
     s.select_tool("type", v).unwrap();
@@ -1151,12 +1317,26 @@ fn list_starts_typed_elsewhere_or_pasted_start_no_list() {
     for c in "1.Pears".chars() {
         s.tool_text(&c.to_string(), v).unwrap();
     }
-    key(&mut s, ToolKey::Enter, Mods::default());
-    s.tool_text("* ", v).unwrap();
+    for pasted in ["* ", "+ ", "# ", "> "] {
+        key(&mut s, ToolKey::Enter, Mods::default());
+        s.tool_text(pasted, v).unwrap();
+    }
     let t = obj(&s, id);
-    assert_eq!(t.plain_text(), "Fruit 1. * A) x\n1. Apples\n1.Pears\n* ");
-    assert_eq!((0..4).map(|i| t.para_at(i).list).collect::<Vec<_>>(), [None, None, None, None]);
+    assert_eq!(t.plain_text(), "Fruit 1. * A) x\n1. Apples\n1.Pears\n* \n+ \n# \n> ");
+    assert!((0..7).all(|i| t.para_at(i).list.is_none()));
     assert!(!undo_labels(&s).iter().any(|l| l == "Bullets and Numbering"));
+    // A paragraph in a bulleted list keeps its bullet when another list start is typed before it.
+    let id = text(&mut s, "Item");
+    s.execute("text.setFormat", &json!({"ids": [id.0], "list": "bullet", "bullet": "dot"})).unwrap();
+    s.execute("select.set", &json!({"ids": [id.0]})).unwrap();
+    click(&mut s, 101.0, 95.0);
+    s.set_tool_option("select", &json!({"start": 0, "end": 0}));
+    for c in "+ ".chars() {
+        s.tool_text(&c.to_string(), v).unwrap();
+    }
+    let t = obj(&s, id);
+    assert_eq!((t.plain_text().as_str(), t.para_at(0).list), ("+ Item", Some(ParaList::bulleted(Bullet::Dot))));
+    assert_eq!(list_markers(&s, id), ["\u{2022}"]);
     // A paragraph in a list keeps its list, and the typed characters stay as text.
     let id = text(&mut s, "Item");
     s.execute("text.setFormat", &json!({"ids": [id.0], "list": "number"})).unwrap();
@@ -1188,16 +1368,61 @@ fn start_list_command_removes_the_typed_characters_and_starts_the_list() {
     assert_eq!(list_markers(&s, id), ["1."]);
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!((obj(&s, id).plain_text().as_str(), obj(&s, id).para_at(1).list), ("Fruit\n1) Apples", None));
-    let id = text(&mut s, "x\n# ");
-    let r = s.execute("text.startList", &json!({"id": id.0})).unwrap();
-    assert_eq!((r["started"].clone(), obj(&s, id).plain_text()), (json!(true), "x\n".to_string()));
-    assert_eq!(obj(&s, id).para_at(1).list, Some(ParaList::bulleted(Bullet::Dot)));
+    for (typed, bullet, marker) in
+        [("* ", Bullet::Dot, "\u{2022}"), ("+ ", Bullet::Circle, "\u{25E6}"), ("# ", Bullet::Square, "\u{25AA}"), ("> ", Bullet::Dash, "\u{2013}")]
+    {
+        let id = text(&mut s, &format!("x\n{typed}"));
+        let r = s.execute("text.startList", &json!({"id": id.0})).unwrap();
+        assert_eq!((r["started"].clone(), obj(&s, id).plain_text()), (json!(true), "x\n".to_string()), "{typed:?}");
+        assert_eq!(obj(&s, id).para_at(1).list, Some(ParaList::bulleted(bullet)), "{typed:?}");
+        s.execute("text.editRange", &json!({"id": id.0, "start": 2, "end": 2, "insert": "Item"})).unwrap();
+        assert_eq!(list_markers(&s, id), [marker], "{typed:?}");
+    }
     let steps = undo_labels(&s).len();
     let id = text(&mut s, "1.x");
     assert_eq!(s.execute("text.startList", &json!({"id": id.0, "at": 3})).unwrap()["started"], json!(false));
     assert_eq!(undo_labels(&s).len(), steps + 1, "only text.create's step");
     assert!(s.execute("text.startList", &json!({"id": id.0, "at": "3"})).is_err(), "`at` is a number");
     assert!(s.execute("text.startList", &json!({"at": 3})).is_err(), "id required");
+}
+
+/// A list typed with "1. " starts at level 1. Tab at the start of the item Return makes moves it
+/// to level 2, where it is numbered from 1, Return continues the list at that level, and
+/// Shift+Tab moves an item back up, where it goes on with level 1's count. "1. " typed at the
+/// start of an item at level 2 stays text.
+#[test]
+fn a_typed_list_takes_its_levels_from_tab_and_shift_tab() {
+    use vectorcraft_doc::text::{NumberStyle, ParaList};
+    let v = ViewInfo::default();
+    let mut s = session();
+    s.select_tool("type", v).unwrap();
+    click(&mut s, 200.0, 200.0);
+    let id = s.doc().unwrap().selection.objects[0];
+    let typed = |s: &mut Session, text: &str| {
+        for c in text.chars() {
+            s.tool_text(&c.to_string(), v).unwrap();
+        }
+    };
+    let shift = Mods { shift: true, ..Mods::default() };
+    typed(&mut s, "1. Apples");
+    key(&mut s, ToolKey::Enter, Mods::default());
+    key(&mut s, ToolKey::Tab, Mods::default());
+    typed(&mut s, "Pears");
+    key(&mut s, ToolKey::Enter, Mods::default());
+    typed(&mut s, "Plums");
+    key(&mut s, ToolKey::Enter, Mods::default());
+    key(&mut s, ToolKey::Tab, shift);
+    typed(&mut s, "Figs");
+    let arabic = ParaList::numbered(NumberStyle::Arabic);
+    let t = obj(&s, id);
+    assert_eq!(t.plain_text(), "Apples\nPears\nPlums\nFigs");
+    assert_eq!((0..4).map(|i| t.para_at(i).list).collect::<Vec<_>>(), [arabic, arabic.at_level(2), arabic.at_level(2), arabic].map(Some));
+    assert_eq!(list_markers(&s, id), ["1.", "1.", "2.", "2."]);
+    key(&mut s, ToolKey::Enter, Mods::default());
+    key(&mut s, ToolKey::Tab, Mods::default());
+    typed(&mut s, "1. ");
+    let t = obj(&s, id);
+    assert_eq!((t.plain_text().as_str(), t.para_at(4).list), ("Apples\nPears\nPlums\nFigs\n1. ", Some(arabic.at_level(2))));
 }
 
 /// A byte offset given as a negative or fractional number is an error, not the end of the text
@@ -2243,6 +2468,18 @@ fn convert_area_point_keeps_text_in_place_for_every_alignment() {
 }
 
 #[test]
+fn convert_area_to_point_keeps_a_deeper_list_item_in_place() {
+    let mut s = session();
+    let r = s.execute("text.create", &json!({"x": 100, "y": 100, "text": "Item", "size": 18, "area": {"width": 150, "height": 200}})).unwrap();
+    let id = NodeId(r["id"].as_u64().unwrap());
+    s.execute("text.setFormat", &json!({"ids": [id.0], "list": "bullet", "listLevel": 3})).unwrap();
+    let before = first_glyph_doc_pos(&obj(&s, id));
+    s.execute("type.convertToPointType", &json!({"ids": [id.0]})).unwrap();
+    let after = first_glyph_doc_pos(&obj(&s, id));
+    assert!((after - before).hypot() < 0.01, "{before:?} → {after:?}");
+}
+
+#[test]
 fn commands_are_listed_with_params() {
     let s = session();
     let cmds: Vec<Value> = s.commands().iter().map(|c| serde_json::to_value(c).unwrap()).collect();
@@ -3229,6 +3466,75 @@ fn glyph_alternates_query_reports_the_fallback_glyph_that_is_drawn() {
     assert!(vectorcraft_text::layout(db, &obj(&s, boxed)).glyphs.is_empty(), "the text overflows");
     let query = s.execute("text.glyphAlternates", &json!({"id": boxed.0, "start": 0})).unwrap();
     assert_eq!(query["chosen"], json!(glyph.gid), "an overflowing character reports the fallback glyph it is drawn with");
+}
+
+/// `text.setGlyphAlternate` with `gid: null` reports the glyph the character is drawn with, as
+/// `text.glyphAlternates` does: the fallback face's glyph for a character the font lacks, laid out
+/// or overflowing, and the capital that All Caps draws for an a.
+#[test]
+fn a_glyph_choice_taken_away_reports_the_glyph_drawn() {
+    use vectorcraft_text::test_fonts::{alternates_family, alternates_font};
+    let _fonts = crate::adding_fonts();
+    let db = vectorcraft_text::FontDb::global();
+    db.add_font(alternates_font(true).expect("the test font builds"));
+    let face = db.face(alternates_family(true), "Regular").expect("the test face");
+    let mut s = session();
+    let reset = |s: &mut Session, id: NodeId, start: usize| {
+        s.execute("text.setGlyphAlternate", &json!({"id": id.0, "start": start, "gid": null})).unwrap()["gid"].clone()
+    };
+    let chosen = |s: &mut Session, id: NodeId, start: usize| {
+        s.execute("text.glyphAlternates", &json!({"id": id.0, "start": start})).unwrap()["chosen"].clone()
+    };
+
+    let ch = 'Ƃ';
+    assert_eq!(face.glyph_for(ch), 0);
+    let point = json!({"x": 0, "y": 0, "text": ch.to_string(), "font": alternates_family(true)});
+    let id = NodeId(s.execute("text.create", &point).unwrap()["id"].as_u64().unwrap());
+    let drawn = vectorcraft_text::layout(db, &obj(&s, id)).glyphs[0].gid;
+    assert_ne!(drawn, 0);
+    assert_eq!(reset(&mut s, id, 0), json!(drawn), "the fallback glyph");
+    assert_eq!(chosen(&mut s, id, 0), json!(drawn));
+
+    let area = json!({"x": 0, "y": 300, "text": ch.to_string(), "font": alternates_family(true), "area": {"width": 200, "height": 2}});
+    let boxed = NodeId(s.execute("text.create", &area).unwrap()["id"].as_u64().unwrap());
+    assert!(vectorcraft_text::layout(db, &obj(&s, boxed)).glyphs.is_empty(), "the text overflows");
+    assert_eq!(reset(&mut s, boxed, 0), json!(drawn), "the overflowing character's fallback glyph");
+
+    let caps = NodeId(
+        s.execute("text.create", &json!({"x": 100, "y": 100, "text": "xaay", "size": 20, "font": alternates_family(true)})).unwrap()["id"]
+            .as_u64()
+            .unwrap(),
+    );
+    s.execute("text.setRangeStyle", &json!({"id": caps.0, "start": 0, "end": 4, "allCaps": true})).unwrap();
+    let drawn = vectorcraft_text::layout(db, &obj(&s, caps)).glyphs.iter().find(|g| g.byte == 1).expect("the a is laid out").gid;
+    assert_ne!(drawn, face.glyph_for('a'), "All Caps draws the a as A");
+    assert_eq!(reset(&mut s, caps, 1), json!(drawn), "the capital drawn");
+    assert_eq!(chosen(&mut s, caps, 1), json!(drawn));
+}
+
+/// A run that holds a choice for its first character and goes on past it, as a file may have,
+/// draws Source Serif 4's fi ligature for the f and the i after that character. `gid: null` for the
+/// i leaves the text as it is and reports the ligature, as `text.glyphAlternates` does.
+#[test]
+fn a_glyph_choice_taken_away_inside_a_ligature_reports_the_ligature() {
+    let db = vectorcraft_text::FontDb::global();
+    let face = db.face("Source Serif 4", "Regular").expect("the bundled face");
+    let mut s = session();
+    let r = s.execute("text.create", &json!({"x": 100, "y": 100, "text": "xfin", "size": 40, "font": "Source Serif 4"})).unwrap();
+    let id = NodeId(r["id"].as_u64().unwrap());
+    let mut runs = obj(&s, id).runs;
+    runs[0].style.glyph_alternate = Some(face.choice('x', face.glyph_for('x')));
+    let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+    let Some(NodeKind::Text(text)) = doc.node_mut(id).map(|n| &mut n.kind) else { panic!("text") };
+    text.runs = runs.clone();
+    let ligature = vectorcraft_text::layout(db, &obj(&s, id)).glyphs.iter().find(|g| g.byte == 1 && g.len == 2).expect("f + i is one glyph").gid;
+    let chosen = s.execute("text.glyphAlternates", &json!({"id": id.0, "start": 2})).unwrap()["chosen"].clone();
+    assert_eq!(chosen, json!(ligature));
+    let undo = s.doc().unwrap().history.undo.len();
+    let r = s.execute("text.setGlyphAlternate", &json!({"id": id.0, "start": 2, "gid": null})).unwrap();
+    assert_eq!(r["gid"], chosen, "the ligature drawn for the i");
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo, "no edit");
+    assert_eq!(obj(&s, id).runs, runs, "the runs are kept");
 }
 
 /// A fallback face draws Ka with the vowel sign I in one cluster, the vowel sign first. The glyph

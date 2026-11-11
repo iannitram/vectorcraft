@@ -78,8 +78,11 @@
 //!   64 periods).
 //! * `<image>` files are read through [`ImportOptions`]: rasters stay linked, SVG files (and SVG
 //!   `data:` URLs) become art (without their text), missing ones a placeholder keeping the link.
-//! * Text lines after the first start at the first line's x; text in a clip path is ignored;
-//!   absolute positions inside type on a path are ignored; vertical text sets every glyph sideways.
+//! * Text lines after the first start at the first line's x; absolute positions inside type on a
+//!   path are ignored; vertical text sets every glyph sideways.
+//! * A `<text>` in a `<clipPath>`, or a `<use>` there that shows one, clips by its glyph outlines.
+//!   When a clip path holds only one text, and that text has no clip path of its own and no
+//!   even-odd clip rule, the clip group's clipping path is the text as live type that paints nothing.
 //!
 //! ## Import text
 //!
@@ -367,6 +370,8 @@ pub fn export_with_report(doc: &Document, opts: &ExportOptions) -> (String, Vec<
 /// Export a document as SVG plus the image files it links to. `native`: the document in the
 /// native format, embedded when [`ExportOptions::preserve_editing`] is on.
 pub fn export_full(doc: &Document, opts: &ExportOptions, native: Option<&[u8]>) -> Output {
+    // Type in the document's composite fonts is drawn in them, whether or not an app has the document open.
+    let _lent = vectorcraft_text::FontDb::global().lend_composite_fonts(&doc.composite_fonts);
     export::export(doc, opts, native)
 }
 
@@ -546,6 +551,15 @@ pub fn import(svg: &str) -> Result<Document, SvgError> {
 /// Linked files (`<image href="photo.png">`) aren't read: see [`import_with`].
 pub fn import_with_report(svg: &str) -> Result<(Document, Vec<String>), SvgError> {
     import_with(svg, &ImportOptions::default())
+}
+
+/// Effect › SVG Filters › Import SVG Filter: the `<filter>` elements of SVG text `svg` that an SVG
+/// filter effect takes, as (name, XML) in document order, up to `room` of them and leaving out the
+/// names `taken` says, and how many it doesn't take. Filters past `room` or named as `taken` says
+/// are not checked. The text is read with the limits on depth and entities that [`import`] reads
+/// documents with.
+pub fn svg_filters(svg: &str, room: usize, taken: impl Fn(&str) -> bool) -> Result<(Vec<(String, String)>, usize), SvgError> {
+    import::svg_filters(svg, room, taken)
 }
 
 pub use glyph::glyph_art;

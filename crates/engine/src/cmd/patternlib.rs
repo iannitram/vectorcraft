@@ -10,6 +10,7 @@ use vectorcraft_doc::pattern::pattern_paint;
 use vectorcraft_doc::{Appearance, Document, Node, NodeId, PatternDef, TileType};
 use vectorcraft_geom::{PathData, Point, Rect, SubPath, shapes};
 
+use super::Result;
 use super::clipboard::Clipboard;
 use super::clipboard::resources::SwatchChoices;
 use super::swatchlib::LibraryInfo;
@@ -84,11 +85,11 @@ pub fn swatch_source(w: &Swatch) -> Option<Arc<Document>> {
 /// Add pattern `name` of library `lib` to `d` with the resources its art uses, as pasting art
 /// painted with it does: the same pattern there already is used, and a name another pattern or
 /// swatch has gets a number → the pattern's name in `d`.
-pub(crate) fn import(d: &mut Document, lib: &Document, name: &str) -> String {
+pub(crate) fn import(d: &mut Document, lib: &Document, name: &str) -> Result<String> {
     let user = Node::path(NodeId(0), shapes::rectangle(Rect::new(0.0, 0.0, 1.0, 1.0)), Appearance::basic(pattern_paint(name), Paint::None, 0.0));
-    let imported = Clipboard::gather(lib, vec![user]).import_into(d, &SwatchChoices::default(), false);
+    let imported = Clipboard::gather(lib, vec![user]).import_into(d, &SwatchChoices::default(), false)?;
     let renamed = imported.renamed.iter().find(|r| r["kind"] == "pattern" && r["from"] == name).and_then(|r| r["to"].as_str());
-    renamed.unwrap_or(name).to_string()
+    Ok(renamed.unwrap_or(name).to_string())
 }
 
 /// The pattern of `d` that is pattern `name` of library `lib`: the same tile options and art under
@@ -96,7 +97,9 @@ pub(crate) fn import(d: &mut Document, lib: &Document, name: &str) -> String {
 pub(crate) fn existing_pattern(d: &Document, lib: &Document, name: &str) -> Option<String> {
     let def = lib.pattern(name)?;
     let bare = |p: &PatternDef| PatternDef { name: String::new(), art: vec![], ..p.clone() };
-    let copy = |n: &str| n == name || n.strip_prefix(name).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| r.parse::<u32>().is_ok());
+    let copy = |n: &str| {
+        n == name || n.strip_prefix(name).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+    };
     let mut found: Vec<&PatternDef> = d.patterns.iter().filter(|p| copy(&p.name) && bare(p) == bare(def) && p.art == def.art).collect();
     found.sort_by_key(|p| p.name != name);
     found.first().map(|p| p.name.clone())
@@ -149,4 +152,20 @@ fn geometric_patterns(d: &mut Document) {
     add(d, "Triangles", 10.0, 10.0, TileType::BrickByRow { offset: 0.5 }, vec![polygon(&[(1.0, 9.0), (5.0, 1.0), (9.0, 9.0)])]);
     add(d, "Crosses", 10.0, 10.0, TileType::Grid, vec![rect(4.0, 1.5, 6.0, 8.5), rect(1.5, 4.0, 8.5, 6.0)]);
     add(d, "Zigzag", 10.0, 8.0, TileType::Grid, vec![polygon(&[(0.0, 5.0), (5.0, 1.0), (10.0, 5.0), (10.0, 7.0), (5.0, 3.0), (0.0, 7.0)])]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plus_signed_suffix_is_not_a_copy_number() {
+        let mut lib = Document::new(100.0, 100.0);
+        lib.patterns.push(PatternDef::new("Dots", vec![]));
+        for (other, expected) in [("Dots +2", None), ("Dots -2", None), ("Dots 2a", None), ("Dots ", None), ("Dots 2", Some("Dots 2"))] {
+            let mut d = Document::new(100.0, 100.0);
+            d.patterns.push(PatternDef::new(other, vec![]));
+            assert_eq!(existing_pattern(&d, &lib, "Dots").as_deref(), expected, "{other}");
+        }
+    }
 }
