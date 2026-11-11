@@ -26,6 +26,13 @@ pub(super) struct SymbolMade {
     reuse: Reuse,
 }
 
+/// The image key of a linked image of the file at `path` that shows `bytes` (the file's pixels or
+/// a placeholder): the key of the bytes and the path's. Images of other files that show the same
+/// pixels have keys of their own, and reading one file's pixels in changes that file's images only.
+fn linked_key(bytes: &[u8], path: &str) -> String {
+    format!("img-{:016x}-{}", fnv1a(bytes), vectorcraft_doc::links::hash_bytes(path.as_bytes()))
+}
+
 impl Importer {
     pub(super) fn warn(&mut self, s: String) {
         if !self.warnings.contains(&s) {
@@ -80,11 +87,15 @@ impl Importer {
         Some(out)
     }
 
-    /// Give `n` the `data-*` attributes of element `id`, unless it has data already (what an
+    /// Give `n` the `data-*` attributes and classes of element `id`, unless it has data already (what an
     /// inner element made of it keeps).
     pub(super) fn keep_data(&self, id: &str, n: &mut Node) {
-        if let Some(data) = self.data.get(id).filter(|_| n.extras().attrs.as_ref().is_none_or(|a| a.data.is_empty())) {
+        let Some((data, classes)) = self.data.get(id) else { return };
+        if n.extras().attrs.as_ref().is_none_or(|a| a.data.is_empty()) {
             n.edit_attrs(|a| a.data = data.clone());
+        }
+        if n.extras().attrs.as_ref().is_none_or(|a| a.classes.is_empty()) {
+            n.edit_attrs(|a| a.classes = classes.clone());
         }
     }
 
@@ -183,7 +194,7 @@ impl Importer {
             _ => self.named("", NodeKind::Group { children: kids, clip: false })?,
         };
         // usvg clips a `<use>` of a symbol to its viewport: that only counts when it cuts the art.
-        let whole = g.clip_path().is_none_or(|cp| uncut(cp, ts, &art, xf));
+        let whole = g.clip_path().is_none_or(|cp| uncut(cp, ts, &art, xf, &|p, m| self.clip_text(p, m)));
         let name = match self.symbols.get(&sym) {
             Some(made) if whole && made.art == without_ids(&art) && made.reuse.allows(xf) => made.name.clone(),
             Some(_) => return None,
@@ -290,10 +301,11 @@ impl Importer {
             (None, id) => format!("'{id}'"),
         };
         let mask = g.mask().and_then(|m| self.opacity_mask(m, ts, &label));
-        // Blurs, shadows and glows become live effects (see [`fx`]).
+        // Blurs, shadows and glows become live effects (see [`fx`]); other filters become Effect ›
+        // SVG Filters effects that keep their XML.
         let effects = match g.filters() {
             [] => vec![],
-            filters => fx::effects(filters, ts, &self.blends).unwrap_or_else(|| {
+            filters => fx::effects(filters, ts, &self.blends).or_else(|| fx::kept(filters, ts, &self.filter_sources)).unwrap_or_else(|| {
                 // usvg wraps a filtered element in a group of its own: name the element then.
                 let on = match g.children() {
                     [usvg::Node::Group(_)] | [] => label.clone(),
@@ -507,7 +519,10 @@ impl Importer {
     }
 
     fn clip_node(&mut self, cp: &usvg::ClipPath, ts: Affine) -> Option<Node> {
-        let mut shapes = clip_shapes(cp, ts);
+        if let Some(n) = self.clip_type(cp, ts) {
+            return Some(n);
+        }
+        let mut shapes = clip_shapes(cp, ts, &|p, m| self.clip_text(p, m));
         let id = cp.id().to_string();
         if shapes.len() == 1 {
             let (bp, r) = shapes.pop()?;
@@ -526,6 +541,53 @@ impl Importer {
             return None;
         }
         self.named(&id, NodeKind::Group { children, clip: false })
+    }
+
+    /// The glyph outlines, in the document, of the text a clip placeholder path `p` stands for (see
+    /// [`text`]), whose user space `m` maps to the document; nothing when the text is hidden. `None`
+    /// when `p` isn't a placeholder: in a clip path only its id tells (usvg paints clip path content
+    /// black).
+    fn clip_text(&self, p: &usvg::Path, m: Affine) -> Option<Vec<(BezPath, FillRule)>> {
+        if p.id().is_empty() {
+            return None;
+        }
+        let i = self.slots.find(p)?;
+        let t = self.slots.texts.get(i)?;
+        if !p.is_visible() {
+            return Some(vec![]);
+        }
+        let mut bp = BezPath::clone(&*self.slots.outlines(i)?);
+        bp.apply_affine(m * self.slots.inner(p) * t.obj.xf);
+        let r = p.fill().map(|f| rule(f.rule())).unwrap_or_default();
+        Some(if bp.elements().is_empty() { vec![] } else { vec![(bp, r)] })
+    }
+
+    /// Clip path `cp` (on an element whose user space `ts` maps to the document) as live type, when
+    /// all it holds is one visible text that clips by the non-zero rule and has no clip path of its
+    /// own: the text object with no fill or stroke, the same structure Make Clipping Mask produces
+    /// for type.
+    fn clip_type(&mut self, cp: &usvg::ClipPath, ts: Affine) -> Option<Node> {
+        let mut m = ts * aff(cp.transform());
+        let mut kids = cp.root().children();
+        while let [usvg::Node::Group(g)] = kids
+            && g.clip_path().is_none()
+        {
+            m *= aff(g.transform());
+            kids = g.children();
+        }
+        let [usvg::Node::Path(p)] = kids else { return None };
+        if p.id().is_empty() || !p.is_visible() || p.fill().is_some_and(|f| f.rule() == usvg::FillRule::EvenOdd) {
+            return None;
+        }
+        let mut obj = self.slots.texts.get(self.slots.find(p)?)?.obj.clone();
+        obj.xf = m * self.slots.inner(p) * obj.xf;
+        let grow = text::size_scale(&obj, obj.xf);
+        for run in &mut obj.runs {
+            run.style.fill = Paint::None;
+            run.style.stroke = Paint::None;
+        }
+        text::fold_scale(&mut obj, grow);
+        self.named(cp.id(), NodeKind::Text(Box::new(obj)))
     }
 
     /// One clip path child: a path, or a compound path of its subpaths when it has several.
@@ -721,11 +783,14 @@ impl Importer {
             .ok()
             .and_then(|r| r.into_dimensions().ok())
             .unwrap_or((size.width().round().max(1.0) as u32, size.height().round().max(1.0) as u32));
-        let key = format!("img-{:016x}", fnv1a(bytes));
         // A linked file keeps a preview; a placeholder is all a missing one has (its preview).
         let linked = self.files.linked(i.kind());
         let missing = linked.is_some_and(|l| l.missing);
         let link = linked.map(|l| l.link.clone());
+        let key = match &link {
+            Some(l) => linked_key(bytes, &l.path),
+            None => format!("img-{:016x}", fnv1a(bytes)),
+        };
         self.doc.images.entry(key.clone()).or_insert_with(|| {
             let blob = ImageBlob { mime: mime.into(), bytes: bytes.clone(), proxy: missing.then(|| bytes.clone()) };
             if link.is_some() && !missing { blob.with_proxy() } else { blob }
@@ -763,9 +828,10 @@ impl Importer {
             std::mem::take(&mut self.data),
             std::mem::take(&mut self.events),
             std::mem::take(&mut self.ellipses),
+            std::mem::take(&mut self.filter_sources),
         );
         let art = self.group_node(tree.root(), acc);
-        (self.links, self.hidden, self.uses, self.labels, self.non_scaling, self.data, self.events, self.ellipses) = outer;
+        (self.links, self.hidden, self.uses, self.labels, self.non_scaling, self.data, self.events, self.ellipses, self.filter_sources) = outer;
         art
     }
 }
@@ -797,6 +863,7 @@ mod tests {
             symbol_suffixes: HashMap::new(),
             pattern_suffixes: HashMap::new(),
             blends: HashMap::new(),
+            filter_sources: HashMap::new(),
             files: Files::default(),
             non_scaling: HashSet::new(),
             data: HashMap::new(),
