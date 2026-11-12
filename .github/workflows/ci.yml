@@ -24,6 +24,8 @@ jobs:
       # Same craft-fonts commit as release.yml.
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       timeout-minutes: 90
+      # One gate leg per runner (R04): Linux, Windows and macOS.
+      os: '["ubuntu-24.04", "windows-latest", "macos-latest"]'
       packages: >-
         pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libxcursor-dev
         libxrandr-dev libxi-dev libfontconfig1-dev libfreetype-dev mesa-vulkan-drivers
