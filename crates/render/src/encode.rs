@@ -10,6 +10,7 @@ pub mod gif;
 pub mod jpeg;
 pub mod png;
 pub mod psd;
+mod psd_type;
 pub mod quantize;
 pub mod tga;
 pub mod tiff;
@@ -185,11 +186,16 @@ pub fn on_white(p: &[u8; 4]) -> [u8; 3] {
 
 /// Lossless WebP.
 pub(crate) fn webp(img: &Rendered) -> Result<Vec<u8>, String> {
-    let mut buf = Vec::new();
-    let enc = image::codecs::webp::WebPEncoder::new_lossless(&mut buf);
-    image::ImageEncoder::write_image(enc, &img.to_straight(), img.width, img.height, image::ExtendedColorType::Rgba8)
-        .map_err(|e| format!("WebP encoding failed: {e}"))?;
-    Ok(buf)
+    let src = craft_image_codecs::Image::from_raw(
+        img.width,
+        img.height,
+        craft_image_codecs::ChannelLayout::Rgba,
+        craft_image_codecs::SampleType::U8,
+        img.to_straight(),
+    )
+    .map_err(|e| format!("WebP encoding failed: {e}"))?;
+    let opts = craft_image_codecs::EncodeOptions { webp_lossless: true, ..craft_image_codecs::EncodeOptions::default() };
+    craft_image_codecs::encode(&src, craft_image_codecs::Format::WebP, &opts).map_err(|e| format!("WebP encoding failed: {e}"))
 }
 
 /// Bounds of the art an export draws: visible objects off template layers (guides left out),
@@ -248,7 +254,7 @@ fn drawn_bounds_with(symbols: &SymbolBoxes, n: &Node, held: Option<&Arc<Node>>, 
         return None;
     }
     match &n.kind {
-        NodeKind::Layer { template: true, .. } | NodeKind::Path { guide: true, .. } => None,
+        NodeKind::Layer { template: true, .. } | NodeKind::Path { guide: true, .. } | NodeKind::RulerGuide { .. } => None,
         NodeKind::Layer { children, clip: false, .. } | NodeKind::Group { children, clip: false } if !fx::has_object_fx(n) => children
             .iter()
             .skip(usize::from(n.extras().shaper.is_some()))
@@ -289,7 +295,7 @@ fn without_undrawn(n: &Node) -> Option<Node> {
     if keeps_all || !matches!(n.kind, NodeKind::Layer { clip: false, .. } | NodeKind::Group { clip: false, .. }) {
         return None;
     }
-    let undrawn = |c: &Node| !c.visible || matches!(c.kind, NodeKind::Layer { template: true, .. } | NodeKind::Path { guide: true, .. });
+    let undrawn = |c: &Node| !c.visible || c.is_guide() || c.is_template();
     let mut changed = false;
     let kept: Vec<Arc<Node>> = n
         .children()?
